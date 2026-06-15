@@ -1,12 +1,20 @@
 ---
 # VM workspace management tasks
 
+- name: Check if workspace directory exists
+  stat:
+    path: "{{ vm_workspace_dir }}"
+  register: workspace_stat
+  when: vm_workspace_dir is defined
+
 - name: List VM workspace contents
   find:
     paths: "{{ vm_workspace_dir }}"
     file_type: any
   register: workspace_contents
-  when: vm_workspace_dir is defined
+  when: 
+    - vm_workspace_dir is defined
+    - workspace_stat.stat.exists
 
 - name: Display workspace contents
   debug:
@@ -18,16 +26,30 @@
       - {{ file.path | basename }} ({{ file.size | filesizeformat }})
       {% endfor %}
   when: 
+    - vm_workspace_dir is defined
+    - workspace_stat.stat.exists
     - workspace_contents is defined
     - workspace_contents.files is defined
 
 - name: Show workspace disk usage
   shell: du -sh "{{ vm_workspace_dir }}"
   register: workspace_usage
-  when: vm_workspace_dir is defined
+  when: 
+    - vm_workspace_dir is defined
+    - workspace_stat.stat.exists
   changed_when: false
 
 - name: Display workspace disk usage
   debug:
     msg: "Workspace disk usage: {{ workspace_usage.stdout }}"
-  when: workspace_usage is defined and workspace_usage.stdout is defined
+  when: 
+    - workspace_usage is defined 
+    - workspace_usage is not skipped
+    - workspace_usage.stdout is defined
+
+- name: Inform if workspace doesn't exist
+  debug:
+    msg: "Workspace directory '{{ vm_workspace_dir }}' does not exist."
+  when: 
+    - vm_workspace_dir is defined
+    - not workspace_stat.stat.exists
