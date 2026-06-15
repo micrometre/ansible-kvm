@@ -1,0 +1,9 @@
+# SSH Configuration
+ssh_key_path: "~/.ssh/id_rsa.pub"
+
+# Certificate and hostname configuration
+cert_hostnames:
+  - localhost
+  - 127.0.0.1
+  - ::1
+  - cbwanpr

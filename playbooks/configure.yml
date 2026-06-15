@@ -1,0 +1,33 @@
+---
+- name: Configure Bare Metal 
+  hosts: localhost
+  become: true
+  gather_facts: true
+
+  # User-scoped roles run as ansible_user from inventory (ubuntu)
+  vars:
+    configure_user: "{{ ansible_user }}"
+    configure_user_home: "/home/{{ ansible_user }}"
+  
+  roles:
+    - { role: virtualization, tags: ["virtualization", "setup"], become: false }
+    - { role: vm-manager, tags: ["vm-manager", "setup"] }
+    - {role: vm-manager, tags: ["create-vm", "setup"], become: false}
+  
+  post_tasks:
+    - name: Display configuration status
+      debug:
+        msg: |
+          ========================================
+          Configuration Complete!
+          ========================================
+          Hostname: {{ ansible_facts.hostname }}
+          IP Address: {{ ansible_host }}
+          OS: {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}
+          Python: {{ ansible_facts.python_version }}
+          ========================================
+          
+          Next steps:
+          - Add more roles to this playbook as needed
+          - Run 'make deploy' when ready to deploy the application
+          ========================================
