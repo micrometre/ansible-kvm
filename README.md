@@ -138,7 +138,11 @@ After creation, connect via VNC to complete Windows installation:
 2. **Get IP**: `virsh domifaddr windows11_vm` (after Windows is installed and network is configured)
 3. **RDP**: Enable RDP in Windows (included in autounattend) and connect to the IP
 
-> **VirtIO Drivers**: During Windows Setup, load the storage driver from the second CD-ROM at `E:\viostor\w11\amd64\`
+> **VirtIO Drivers**: During Windows Setup, you'll need to load drivers twice:
+> 1. **Storage driver** (when selecting disk): Load from `D:\viostor\w11\amd64\` or `E:\viostor\w11\amd64\`
+> 2. **Network driver** (for internet access): Load from `D:\NetKVM\w11\amd64\` or `E:\NetKVM\w11\amd64\`
+>
+> The VirtIO drivers ISO is attached as the second CD-ROM. If the path differs, browse the ISO folders to find the correct architecture folder.
 
 ### Ubuntu VMs
 After creation, access your VM using the default `ubuntu` user and your SSH key:
