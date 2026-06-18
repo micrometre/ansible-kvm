@@ -1,0 +1,14 @@
+# Individual inventory for VM: windows11_vm
+# Created: 2026-06-18T19:18:36Z
+all:
+  hosts:
+    windows11_vm:
+      ansible_host: "PENDING - get from: virsh domifaddr windows11_vm"
+      ansible_user: Administrator
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      vm_created: "2026-06-18T19:18:36Z"
+      vm_ram: 4096
+      vm_vcpus: 4
+      vm_disk_size: "64G"
+      vm_os_variant: "win11"

@@ -1,0 +1,69 @@
+---
+# Windows 11 VM status tasks
+
+- name: Get VM list
+  shell: virsh list --all
+  register: vm_list
+  changed_when: false
+
+- name: Display all VMs
+  debug:
+    msg: "{{ vm_list.stdout_lines }}"
+
+- name: Check specific VM state
+  shell: virsh domstate {{ vm_name }}
+  register: vm_state
+  failed_when: false
+  changed_when: false
+
+- name: Display VM state
+  debug:
+    msg: "VM '{{ vm_name }}' state: {{ vm_state.stdout if vm_state.rc == 0 else 'not found' }}"
+
+- name: Get VM IP address (if running)
+  shell: virsh domifaddr {{ vm_name }}
+  register: vm_ip
+  failed_when: false
+  changed_when: false
+  when: vm_state.rc == 0 and vm_state.stdout | trim == "running"
+
+- name: Display VM IP
+  debug:
+    msg: "{{ vm_ip.stdout_lines }}"
+  when:
+    - vm_ip is defined
+    - vm_ip is not skipped
+    - vm_ip.rc is defined
+    - vm_ip.rc == 0
+
+- name: Get VNC display port
+  shell: virsh vncdisplay {{ vm_name }}
+  register: vnc_port
+  failed_when: false
+  changed_when: false
+  when: vm_state.rc == 0 and vm_state.stdout | trim == "running"
+
+- name: Display VNC connection info
+  debug:
+    msg: "VNC: {{ ansible_default_ipv4.address | default(ansible_host) | default('localhost') }}{{ vnc_port.stdout }}"
+  when:
+    - vnc_port is defined
+    - vnc_port is not skipped
+    - vnc_port.rc is defined
+    - vnc_port.rc == 0
+
+- name: Get VM info
+  shell: virsh dominfo {{ vm_name }}
+  register: vm_info
+  failed_when: false
+  changed_when: false
+  when: vm_state.rc == 0
+
+- name: Display VM info
+  debug:
+    msg: "{{ vm_info.stdout_lines }}"
+  when:
+    - vm_info is defined
+    - vm_info is not skipped
+    - vm_info.rc is defined
+    - vm_info.rc == 0

@@ -1,0 +1,49 @@
+---
+# Default variables for windows11 role
+
+# VM identity
+vm_name: windows11_vm
+
+# Hardware resources (Windows 11 minimums: 4 GB RAM, 2 CPUs, 64 GB disk)
+vm_ram: 4096
+vm_vcpus: 4
+vm_disk_size: 64G
+
+# Windows 11 ISO - MUST be provided by the user at runtime
+# Download from: https://www.microsoft.com/en-us/software-download/windows11
+# Usage: -e "win11_iso_path=/path/to/Win11_64bit.iso"
+win11_iso_path: ""
+
+# VirtIO Windows drivers (provides virtio storage/network drivers during install)
+virtio_iso_url: "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso"
+virtio_iso_filename: "virtio-win.iso"
+
+# Libvirt storage paths
+libvirt_images_path: /var/lib/libvirt/images
+work_directory: "{{ configure_user_home | default('/home/' + (ansible_user | default(ansible_user_id))) }}/vm-workspace"
+vm_workspace_dir: "{{ work_directory }}/{{ vm_name }}"
+shared_images_dir: "{{ configure_user_home | default('/home/' + (ansible_user | default(ansible_user_id))) }}/vm-images"
+
+# Machine configuration (q35 required for UEFI + TPM + Secure Boot)
+vm_machine_type: q35
+vm_os_variant: win11
+vm_cpu: host-model
+vm_network: bridge=virbr0,model=virtio
+vm_graphics: vnc,listen=0.0.0.0
+
+# UEFI and TPM 2.0 (required for Windows 11)
+win11_enable_tpm: true
+
+# Autounattend answer file for unattended installation
+# Requires: mtools, dosfstools packages
+win11_use_autounattend: false
+win11_admin_password: "Windows11!"
+win11_locale: "en-US"
+win11_timezone: "UTC"
+win11_product_key: ""
+win11_computer_name: "WIN11-KVM"
+win11_image_index: "1"
+
+# VM management
+force_recreate: false
+cleanup_on_failure: true

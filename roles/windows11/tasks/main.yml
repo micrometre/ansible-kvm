@@ -1,0 +1,296 @@
+---
+# Main tasks for windows11 role
+
+- name: Include cleanup tasks
+  include_tasks: cleanup.yml
+  when: vm_cleanup | default(false) | bool
+
+- name: Include status tasks
+  include_tasks: status.yml
+  when: vm_action | default('create') == 'status'
+
+- name: Skip VM creation if only checking status or cleaning up
+  meta: end_play
+  when: >
+    (vm_action | default('create') == 'status') or
+    (vm_cleanup | default(false) | bool)
+
+- name: Validate Windows 11 ISO path is provided
+  fail:
+    msg: >
+      Windows 11 ISO path is not set.
+      Please provide: -e "win11_iso_path=/path/to/Win11_64bit.iso"
+      Download from: https://www.microsoft.com/en-us/software-download/windows11
+  when: win11_iso_path == ""
+
+- name: Check that Windows 11 ISO exists
+  stat:
+    path: "{{ win11_iso_path }}"
+  register: win11_iso_stat
+
+- name: Fail if Windows 11 ISO not found
+  fail:
+    msg: "Windows 11 ISO not found at: {{ win11_iso_path }}"
+  when: not win11_iso_stat.stat.exists
+
+- name: Install Windows 11 KVM dependencies
+  apt:
+    name:
+      - ovmf
+      - swtpm
+      - swtpm-tools
+      - mtools
+      - dosfstools
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Create shared images directory
+  file:
+    path: "{{ shared_images_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Check if VirtIO drivers ISO already exists
+  stat:
+    path: "{{ shared_images_dir }}/{{ virtio_iso_filename }}"
+  register: virtio_iso_stat
+
+- name: Download VirtIO Windows drivers ISO
+  get_url:
+    url: "{{ virtio_iso_url }}"
+    dest: "{{ shared_images_dir }}/{{ virtio_iso_filename }}"
+    mode: '0644'
+  when: not virtio_iso_stat.stat.exists
+
+- name: Create work directory
+  file:
+    path: "{{ work_directory }}"
+    state: directory
+    mode: '0755'
+
+- name: Create VM-specific workspace directory
+  file:
+    path: "{{ vm_workspace_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Ensure libvirt images directory exists
+  file:
+    path: "{{ libvirt_images_path }}"
+    state: directory
+    owner: libvirt-qemu
+    group: libvirt-qemu
+    mode: '0755'
+  become: yes
+
+- name: Grant libvirt-qemu read access to Windows 11 ISO
+  acl:
+    path: "{{ win11_iso_path }}"
+    entity: libvirt-qemu
+    etype: user
+    permissions: r
+    state: present
+  become: yes
+  ignore_errors: yes
+
+- name: Grant libvirt-qemu execute access on all parent directories of the ISO
+  shell: |
+    path="{{ win11_iso_path }}"
+    while [ "$path" != "/" ]; do
+      path=$(dirname "$path")
+      setfacl -m u:libvirt-qemu:x "$path" 2>/dev/null || true
+    done
+  become: yes
+  changed_when: false
+
+- name: Copy VirtIO drivers ISO to libvirt storage
+  copy:
+    src: "{{ shared_images_dir }}/{{ virtio_iso_filename }}"
+    dest: "{{ libvirt_images_path }}/{{ virtio_iso_filename }}"
+    owner: libvirt-qemu
+    group: libvirt-qemu
+    mode: '0644'
+    remote_src: yes
+  become: yes
+
+- name: Create blank Windows 11 VM disk image
+  shell: qemu-img create -f qcow2 {{ libvirt_images_path }}/{{ vm_name }}.img {{ vm_disk_size }}
+  args:
+    creates: "{{ libvirt_images_path }}/{{ vm_name }}.img"
+  become: yes
+
+- name: Set ownership of VM disk
+  file:
+    path: "{{ libvirt_images_path }}/{{ vm_name }}.img"
+    owner: libvirt-qemu
+    group: libvirt-qemu
+    mode: '0644'
+  become: yes
+
+- name: Generate autounattend.xml answer file
+  template:
+    src: autounattend.xml.j2
+    dest: "{{ vm_workspace_dir }}/autounattend.xml"
+    mode: '0644'
+  when: win11_use_autounattend | bool
+
+- name: Create autounattend FAT disk image
+  shell: |
+    dd if=/dev/zero of="{{ vm_workspace_dir }}/autounattend.img" bs=512K count=4
+    mkfs.fat -n UNATTEND "{{ vm_workspace_dir }}/autounattend.img"
+    mcopy -i "{{ vm_workspace_dir }}/autounattend.img" "{{ vm_workspace_dir }}/autounattend.xml" ::autounattend.xml
+  args:
+    creates: "{{ vm_workspace_dir }}/autounattend.img"
+  when: win11_use_autounattend | bool
+
+- name: Copy autounattend disk to libvirt storage
+  copy:
+    src: "{{ vm_workspace_dir }}/autounattend.img"
+    dest: "{{ libvirt_images_path }}/autounattend-{{ vm_name }}.img"
+    owner: libvirt-qemu
+    group: libvirt-qemu
+    mode: '0644'
+    remote_src: yes
+  become: yes
+  when: win11_use_autounattend | bool
+
+- name: Check if VM already exists
+  shell: virsh list --all | grep -q "{{ vm_name }}"
+  register: vm_exists
+  failed_when: false
+  changed_when: false
+
+- name: Stop and remove existing VM if force_recreate is true
+  block:
+    - name: Shutdown existing VM
+      shell: virsh shutdown {{ vm_name }}
+      ignore_errors: yes
+
+    - name: Wait for graceful shutdown
+      wait_for:
+        timeout: 30
+
+    - name: Force destroy VM if still running
+      shell: virsh destroy {{ vm_name }}
+      ignore_errors: yes
+
+    - name: Remove existing VM and NVRAM
+      shell: virsh undefine {{ vm_name }} --nvram
+      ignore_errors: yes
+
+    - name: Remove existing VM disk
+      file:
+        path: "{{ libvirt_images_path }}/{{ vm_name }}.img"
+        state: absent
+      become: yes
+
+    - name: Re-create blank VM disk after removal
+      shell: qemu-img create -f qcow2 {{ libvirt_images_path }}/{{ vm_name }}.img {{ vm_disk_size }}
+      become: yes
+
+    - name: Reset disk ownership
+      file:
+        path: "{{ libvirt_images_path }}/{{ vm_name }}.img"
+        owner: libvirt-qemu
+        group: libvirt-qemu
+        mode: '0644'
+      become: yes
+
+  when:
+    - force_recreate
+    - vm_exists.rc == 0
+
+- name: Fail if VM exists and force_recreate is false
+  fail:
+    msg: "VM '{{ vm_name }}' already exists. Set force_recreate=true to recreate it."
+  when:
+    - vm_exists.rc == 0
+    - not force_recreate
+
+- name: Set autounattend extra disk argument
+  set_fact:
+    win11_extra_disk_args: "--disk path={{ libvirt_images_path }}/autounattend-{{ vm_name }}.img,bus=virtio,readonly=on"
+  when: win11_use_autounattend | bool
+
+- name: Clear autounattend extra disk argument when not used
+  set_fact:
+    win11_extra_disk_args: ""
+  when: not (win11_use_autounattend | bool)
+
+- name: Create Windows 11 VM
+  shell: >
+    virt-install
+    --name={{ vm_name }}
+    --memory={{ vm_ram }}
+    --vcpus={{ vm_vcpus }}
+    --os-variant={{ vm_os_variant }}
+    --machine={{ vm_machine_type }}
+    --cpu={{ vm_cpu }}
+    --disk path={{ libvirt_images_path }}/{{ vm_name }}.img,bus=virtio,format=qcow2
+    --disk path={{ win11_iso_path }},device=cdrom,readonly=on,bus=sata
+    --disk path={{ libvirt_images_path }}/{{ virtio_iso_filename }},device=cdrom,readonly=on,bus=sata
+    {{ win11_extra_disk_args }}
+    --network {{ vm_network }}
+    --graphics {{ vm_graphics }}
+    --noautoconsole
+    --boot uefi
+    --features smm=on
+    --tpm emulator,model=tpm-crb,version=2.0
+  register: vm_creation_result
+
+- name: Display VM creation result
+  debug:
+    msg: "VM '{{ vm_name }}' created successfully!"
+
+- name: Get VM status
+  shell: virsh list --all | grep {{ vm_name }}
+  register: vm_current_status
+  changed_when: false
+
+- name: Display VM status
+  debug:
+    msg: "{{ vm_current_status.stdout }}"
+
+- name: Create VM inventory entry
+  copy:
+    content: |
+      # Individual inventory for VM: {{ vm_name }}
+      # Created: {{ ansible_date_time.iso8601 }}
+      all:
+        hosts:
+          {{ vm_name }}:
+            ansible_host: "PENDING - get from: virsh domifaddr {{ vm_name }}"
+            ansible_user: Administrator
+            ansible_connection: winrm
+            ansible_winrm_transport: ntlm
+            vm_created: "{{ ansible_date_time.iso8601 }}"
+            vm_ram: {{ vm_ram }}
+            vm_vcpus: {{ vm_vcpus }}
+            vm_disk_size: "{{ vm_disk_size }}"
+            vm_os_variant: "{{ vm_os_variant }}"
+    dest: "{{ playbook_dir }}/../inventory/vm-{{ vm_name }}.yml"
+    mode: '0644'
+
+- name: Display connection information
+  debug:
+    msg: |
+      Windows 11 VM created!
+      Name:      {{ vm_name }}
+      RAM:       {{ vm_ram }} MB
+      vCPUs:     {{ vm_vcpus }}
+      Disk:      {{ vm_disk_size }}
+      Machine:   {{ vm_machine_type }} (UEFI + TPM 2.0)
+
+      Connect via VNC to complete Windows installation:
+        virsh vncdisplay {{ vm_name }}
+        then connect: vncviewer <host>:<port>
+
+      After installation:
+        virsh domifaddr {{ vm_name }}       # get IP
+        virsh console {{ vm_name }}         # serial console (limited on Windows)
+
+      VirtIO drivers are on the second CD-ROM (E: or D: drive).
+      Install them during Windows Setup > Load Driver.
+
+      Inventory: {{ playbook_dir }}/../inventory/vm-{{ vm_name }}.yml
