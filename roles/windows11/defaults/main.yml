@@ -47,3 +47,9 @@ win11_image_index: "1"
 # VM management
 force_recreate: false
 cleanup_on_failure: true
+
+# Snapshot configuration
+snapshot_name: ""
+snapshot_description: "Snapshot of {{ vm_name }} created via Ansible"
+snapshot_disk_only: false
+new_vm_name: ""

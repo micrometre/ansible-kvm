@@ -1,5 +1,5 @@
 # Individual inventory for VM: windows11_vm
-# Created: 2026-06-18T19:18:36Z
+# Created: 2026-10-24T05:26:14Z
 all:
   hosts:
     windows11_vm:
@@ -7,7 +7,7 @@ all:
       ansible_user: Administrator
       ansible_connection: winrm
       ansible_winrm_transport: ntlm
-      vm_created: "2026-06-18T19:18:36Z"
+      vm_created: "2026-10-24T05:26:14Z"
       vm_ram: 4096
       vm_vcpus: 4
       vm_disk_size: "64G"

@@ -1,0 +1,204 @@
+---
+# VM snapshot management tasks
+
+- name: Check if VM exists
+  shell: virsh dominfo {{ vm_name }}
+  register: vm_dominfo
+  failed_when: false
+  changed_when: false
+
+- name: Fail if VM does not exist
+  fail:
+    msg: "VM '{{ vm_name }}' does not exist. Cannot perform '{{ vm_action }}' operation."
+  when: vm_dominfo.rc != 0
+
+# --- CREATE SNAPSHOT ---
+- name: Create VM snapshot
+  block:
+    - name: Set effective snapshot name
+      set_fact:
+        effective_snapshot_name: >-
+          {{ snapshot_name if (snapshot_name is defined and snapshot_name | length > 0)
+             else (vm_name + '-snap-' + ansible_date_time.iso8601_basic_short) }}
+
+    - name: Create snapshot for VM
+      shell: >
+        virsh snapshot-create-as
+        --domain {{ vm_name }}
+        --name "{{ effective_snapshot_name | trim }}"
+        --description "{{ snapshot_description }}"
+        {{ '--disk-only' if (snapshot_disk_only | default(false) | bool) else '' }}
+      register: snapshot_create_result
+
+    - name: Display snapshot creation result
+      debug:
+        msg: "Snapshot '{{ effective_snapshot_name | trim }}' created successfully for VM '{{ vm_name }}'."
+
+  when: vm_action in ['snapshot', 'snapshot_create']
+
+# --- REVERT SNAPSHOT ---
+- name: Revert VM to snapshot
+  block:
+    - name: Validate snapshot_name is provided for revert
+      fail:
+        msg: "snapshot_name is required to revert. Usage: make snapshot_revert SNAPSHOT_NAME=<name> [VM_NAME=<vm>]"
+      when: snapshot_name is not defined or snapshot_name | trim == ""
+
+    - name: Revert VM to specified snapshot
+      shell: virsh snapshot-revert --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
+      register: snapshot_revert_result
+
+    - name: Display snapshot revert result
+      debug:
+        msg: "VM '{{ vm_name }}' reverted to snapshot '{{ snapshot_name | trim }}'."
+
+  when: vm_action == 'snapshot_revert'
+
+# --- DELETE SNAPSHOT ---
+- name: Delete VM snapshot
+  block:
+    - name: Validate snapshot_name is provided for delete
+      fail:
+        msg: "snapshot_name is required to delete. Usage: make snapshot_delete SNAPSHOT_NAME=<name> [VM_NAME=<vm>]"
+      when: snapshot_name is not defined or snapshot_name | trim == ""
+
+    - name: Delete specified snapshot from VM
+      shell: virsh snapshot-delete --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
+      register: snapshot_delete_result
+
+    - name: Display snapshot delete result
+      debug:
+        msg: "Snapshot '{{ snapshot_name | trim }}' deleted from VM '{{ vm_name }}'."
+
+  when: vm_action == 'snapshot_delete'
+
+# --- CREATE NEW VM FROM SNAPSHOT (CLONE) ---
+- name: Create new VM from snapshot
+  block:
+    - name: Validate snapshot_name and new_vm_name are provided
+      fail:
+        msg: >
+          Both snapshot_name and new_vm_name are required (and must differ from source vm_name).
+          Usage: make snapshot_clone SNAPSHOT_NAME=<snap> NEW_VM_NAME=<new_vm> [VM_NAME=<source_vm>]
+      when: >
+        (snapshot_name is not defined or snapshot_name | trim == "") or
+        (new_vm_name is not defined or new_vm_name | trim == "") or
+        (new_vm_name | trim == vm_name | trim)
+
+    - name: Verify snapshot exists on source VM
+      shell: virsh snapshot-info --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
+      register: snapshot_info_check
+      changed_when: false
+
+    - name: Check if target new VM already exists
+      shell: virsh dominfo {{ new_vm_name | trim }}
+      register: new_vm_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if new VM already exists and force_recreate is false
+      fail:
+        msg: "Target VM '{{ new_vm_name | trim }}' already exists. Set force_recreate=true to overwrite it."
+      when:
+        - new_vm_exists.rc == 0
+        - not (force_recreate | default(false) | bool)
+
+    - name: Remove existing target VM if force_recreate is true
+      block:
+        - name: Force destroy existing target VM
+          shell: virsh destroy {{ new_vm_name | trim }}
+          ignore_errors: yes
+
+        - name: Undefine existing target VM
+          shell: virsh undefine {{ new_vm_name | trim }} --remove-all-storage --snapshots-metadata
+          ignore_errors: yes
+      when:
+        - new_vm_exists.rc == 0
+        - force_recreate | default(false) | bool
+
+    - name: Create workspace directory for new VM
+      file:
+        path: "{{ work_directory }}/{{ new_vm_name | trim }}"
+        state: directory
+        mode: '0755'
+
+    - name: Extract internal snapshot disk to new VM disk image
+      shell: >
+        qemu-img convert -f qcow2 -O qcow2
+        -l snapshot.name="{{ snapshot_name | trim }}"
+        "{{ libvirt_images_path }}/{{ vm_name }}.img"
+        "{{ libvirt_images_path }}/{{ new_vm_name | trim }}.img"
+      become: yes
+      register: convert_internal_snap
+      failed_when: false
+
+    - name: Fallback to copying base disk image for external disk-only snapshot
+      shell: >
+        qemu-img convert -f qcow2 -O qcow2
+        "{{ libvirt_images_path }}/{{ vm_name }}.img"
+        "{{ libvirt_images_path }}/{{ new_vm_name | trim }}.img"
+      become: yes
+      when: convert_internal_snap.rc != 0
+
+    - name: Set ownership of new VM disk image
+      file:
+        path: "{{ libvirt_images_path }}/{{ new_vm_name | trim }}.img"
+        owner: libvirt-qemu
+        group: libvirt-qemu
+        mode: '0644'
+      become: yes
+
+    - name: Create and start new VM from snapshot disk
+      shell: >
+        virt-install
+        --name={{ new_vm_name | trim }}
+        --ram={{ vm_ram }}
+        --vcpus={{ vm_vcpus }}
+        --import
+        --disk path={{ libvirt_images_path }}/{{ new_vm_name | trim }}.img,format=qcow2
+        --os-variant={{ vm_os_variant }}
+        --network {{ vm_network }}
+        --graphics {{ vm_graphics }}
+        --noautoconsole
+      register: snapshot_clone_result
+
+    - name: Create individual VM inventory file for cloned VM
+      copy:
+        content: |
+          # Individual inventory for VM: {{ new_vm_name | trim }} (cloned from {{ vm_name }}@{{ snapshot_name | trim }})
+          # Created: {{ ansible_date_time.iso8601 }}
+          all:
+            hosts:
+              {{ new_vm_name | trim }}:
+                ansible_host: {{ vm_static_ip }}
+                ansible_user: {{ vm_user }}
+                ansible_ssh_private_key_file: "~/.ssh/id_rsa"
+                ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+                vm_created: "{{ ansible_date_time.iso8601 }}"
+                cloned_from_vm: "{{ vm_name }}"
+                cloned_from_snapshot: "{{ snapshot_name | trim }}"
+                vm_ram: {{ vm_ram }}
+                vm_vcpus: {{ vm_vcpus }}
+                vm_disk_size: "{{ vm_disk_size }}"
+                vm_os_variant: "{{ vm_os_variant }}"
+        dest: "{{ playbook_dir }}/../inventory/vm-{{ new_vm_name | trim }}.yml"
+        mode: '0644'
+
+    - name: Display new VM creation from snapshot result
+      debug:
+        msg: |
+          New VM '{{ new_vm_name | trim }}' created successfully from '{{ vm_name }}' snapshot '{{ snapshot_name | trim }}'!
+          Disk: {{ libvirt_images_path }}/{{ new_vm_name | trim }}.img
+          Inventory: {{ playbook_dir }}/../inventory/vm-{{ new_vm_name | trim }}.yml
+
+  when: vm_action == 'snapshot_clone'
+
+# --- LIST SNAPSHOTS (runs on snapshot_list and after create/revert/delete) ---
+- name: List snapshots for VM
+  shell: virsh snapshot-list --domain {{ vm_name }}
+  register: snapshot_list_result
+  changed_when: false
+
+- name: Display VM snapshots
+  debug:
+    msg: "{{ snapshot_list_result.stdout_lines }}"

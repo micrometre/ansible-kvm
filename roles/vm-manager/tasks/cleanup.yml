@@ -23,7 +23,7 @@
   ignore_errors: yes
 
 - name: Remove VM definition and storage
-  shell: virsh undefine {{ vm_name }} --remove-all-storage
+  shell: virsh undefine {{ vm_name }} --remove-all-storage --snapshots-metadata
   when: vm_status.rc == 0
   ignore_errors: yes
 

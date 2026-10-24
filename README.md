@@ -110,7 +110,12 @@ Customize these in `group_vars/all.yml` or via the CLI:
 │   ├── virtualization/       # Infrastructure role
 │   ├── windows11/            # Windows 11 VM lifecycle role
 │   └── vm-manager/           # Ubuntu VM lifecycle role
-└── Makefile                  # Command-line convenience wrapper
+├── Makefiles/
+│   ├── setup.mk              # Host virtualization setup targets
+│   ├── vm.mk                 # Ubuntu VM lifecycle targets
+│   ├── win11.mk              # Windows 11 VM lifecycle targets
+│   └── snapshot.mk           # VM snapshot & clone targets
+└── Makefile                  # Command-line entry point wrapper
 ```
 
 ---
@@ -123,6 +128,16 @@ Customize these in `group_vars/all.yml` or via the CLI:
 | **Windows 11 Status** | `make win11_status` (Add `VM_NAME=xyz` for specific VM) |
 | **Ubuntu VM Status** | `make vm_status` (Add `VM_NAME=xyz` for specific VM) |
 | **View Workspace** | `make workspace` |
+| **Snapshot Ubuntu VM** | `make snapshot [VM_NAME=xyz] [SNAPSHOT_NAME=snap1]` |
+| **List Ubuntu Snapshots** | `make snapshot_list [VM_NAME=xyz]` |
+| **Revert Ubuntu Snapshot** | `make snapshot_revert SNAPSHOT_NAME=snap1 [VM_NAME=xyz]` |
+| **Delete Ubuntu Snapshot** | `make snapshot_delete SNAPSHOT_NAME=snap1 [VM_NAME=xyz]` |
+| **Create Ubuntu VM from Snapshot** | `make snapshot_clone SNAPSHOT_NAME=snap1 NEW_VM_NAME=new_vm [VM_NAME=xyz]` |
+| **Snapshot Windows 11 VM** | `make win11_snapshot [VM_NAME=xyz] [SNAPSHOT_NAME=snap1]` |
+| **List Windows 11 Snapshots** | `make win11_snapshot_list [VM_NAME=xyz]` |
+| **Revert Windows 11 Snapshot** | `make win11_snapshot_revert SNAPSHOT_NAME=snap1 [VM_NAME=xyz]` |
+| **Delete Windows 11 Snapshot** | `make win11_snapshot_delete SNAPSHOT_NAME=snap1 [VM_NAME=xyz]` |
+| **Create Windows 11 VM from Snapshot** | `make win11_snapshot_clone SNAPSHOT_NAME=snap1 NEW_VM_NAME=new_win11 [VM_NAME=xyz]` |
 | **Delete Windows 11 VM** | `make clean_win11 VM_NAME=xyz` |
 | **Delete Ubuntu VM** | `make clean VM_NAME=xyz` |
 | **Full Reset** | `make clean_all` (Removes all VMs and images) |

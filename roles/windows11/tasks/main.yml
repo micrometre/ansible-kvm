@@ -9,10 +9,14 @@
   include_tasks: status.yml
   when: vm_action | default('create') == 'status'
 
-- name: Skip VM creation if only checking status or cleaning up
+- name: Include snapshot tasks
+  include_tasks: snapshot.yml
+  when: vm_action | default('create') in ['snapshot', 'snapshot_create', 'snapshot_list', 'snapshot_revert', 'snapshot_delete', 'snapshot_clone']
+
+- name: Skip VM creation if only checking status, snapshot or cleaning up
   meta: end_play
   when: >
-    (vm_action | default('create') == 'status') or
+    (vm_action | default('create') in ['status', 'snapshot', 'snapshot_create', 'snapshot_list', 'snapshot_revert', 'snapshot_delete', 'snapshot_clone']) or
     (vm_cleanup | default(false) | bool)
 
 - name: Validate Windows 11 ISO path is provided
@@ -176,7 +180,7 @@
       ignore_errors: yes
 
     - name: Remove existing VM and NVRAM
-      shell: virsh undefine {{ vm_name }} --nvram
+      shell: virsh undefine {{ vm_name }} --nvram --snapshots-metadata
       ignore_errors: yes
 
     - name: Remove existing VM disk

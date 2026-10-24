@@ -23,7 +23,7 @@
   ignore_errors: yes
 
 - name: Remove VM definition and NVRAM
-  shell: virsh undefine {{ vm_name }} --nvram
+  shell: virsh undefine {{ vm_name }} --nvram --snapshots-metadata
   when: vm_status.rc == 0
   ignore_errors: yes
 
