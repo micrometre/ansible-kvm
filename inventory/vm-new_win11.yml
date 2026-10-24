@@ -1,0 +1,16 @@
+# Individual inventory for VM: new_win11 (cloned from windows11_vm@windows11_vm-snap-20261024T085742)
+# Created: 2026-10-24T07:57:42Z
+all:
+  hosts:
+    new_win11:
+      ansible_host: "PENDING - get from: virsh domifaddr new_win11"
+      ansible_user: Administrator
+      ansible_connection: winrm
+      ansible_winrm_transport: ntlm
+      vm_created: "2026-10-24T07:57:42Z"
+      cloned_from_vm: "windows11_vm"
+      cloned_from_snapshot: "windows11_vm-snap-20261024T085742"
+      vm_ram: 4096
+      vm_vcpus: 4
+      vm_disk_size: "64G"
+      vm_os_variant: "win11"

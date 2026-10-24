@@ -31,14 +31,25 @@
       register: snapshot_create_result
       failed_when: false
 
+    - name: Get non-primary disk targets for disk-only fallback
+      shell: |
+        virsh domblklist {{ vm_name }} --details | awk '$1 == "file" && $2 == "disk" && $3 != "vda" {print "--diskspec " $3 ",snapshot=no"}' | tr '\n' ' '
+      register: extra_diskspecs
+      changed_when: false
+      when:
+        - snapshot_create_result.rc != 0
+        - not (snapshot_disk_only | default(false) | bool)
+        - "'pflash' in (snapshot_create_result.stderr | default('')) or 'Operation not supported' in (snapshot_create_result.stderr | default(''))"
+
     - name: Retry with --disk-only if UEFI/pflash blocks internal snapshot
       shell: >
         virsh snapshot-create-as
         --domain {{ vm_name }}
         --name "{{ effective_snapshot_name | trim }}"
         --description "{{ snapshot_description }}"
-        --disk-only
+        --disk-only {{ extra_diskspecs.stdout | default('') }}
       register: snapshot_create_fallback
+      failed_when: false
       when:
         - snapshot_create_result.rc != 0
         - not (snapshot_disk_only | default(false) | bool)
@@ -68,6 +79,46 @@
     - name: Revert VM to specified snapshot
       shell: virsh snapshot-revert --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
       register: snapshot_revert_result
+      failed_when: false
+
+    - name: Fallback revert for external disk-only snapshot
+      block:
+        - name: Check VM state before external snapshot revert
+          shell: virsh domstate {{ vm_name }}
+          register: revert_vm_state
+          changed_when: false
+
+        - name: Stop VM if running before resetting external snapshot overlay
+          shell: virsh destroy {{ vm_name }}
+          when: "'running' in revert_vm_state.stdout"
+          ignore_errors: yes
+
+        - name: Reset external snapshot overlay back to backing image state
+          shell: |
+            overlay="{{ libvirt_images_path }}/{{ vm_name }}.{{ snapshot_name | trim }}"
+            if [ -f "$overlay" ]; then
+              backing=$(qemu-img info "$overlay" | awk -F': ' '/^backing file:/ {print $2}' | awk '{print $1}')
+              if [ -n "$backing" ]; then
+                qemu-img create -f qcow2 -F qcow2 -b "$backing" "$overlay"
+                chown libvirt-qemu:libvirt-qemu "$overlay"
+                chmod 0644 "$overlay"
+              fi
+            fi
+          become: yes
+
+        - name: Restart VM if it was running before revert
+          shell: virsh start {{ vm_name }}
+          when: "'running' in revert_vm_state.stdout"
+      when:
+        - snapshot_revert_result.rc != 0
+        - "'external' in (snapshot_revert_result.stderr | default('')) or 'not supported' in (snapshot_revert_result.stderr | default(''))"
+
+    - name: Fail if snapshot revert failed for other reasons
+      fail:
+        msg: "Failed to revert to snapshot '{{ snapshot_name | trim }}': {{ snapshot_revert_result.stderr }}"
+      when:
+        - snapshot_revert_result.rc != 0
+        - not ("'external' in (snapshot_revert_result.stderr | default('')) or 'not supported' in (snapshot_revert_result.stderr | default(''))")
 
     - name: Display snapshot revert result
       debug:

@@ -1,5 +1,5 @@
 ---
-# VM snapshot management tasks
+# VM snapshot management tasks (supports both BIOS/Ubuntu and UEFI/Windows 11 VMs)
 
 - name: Check if VM exists
   shell: virsh dominfo {{ vm_name }}
@@ -21,7 +21,7 @@
           {{ snapshot_name if (snapshot_name is defined and snapshot_name | length > 0)
              else (vm_name + '-snap-' + ansible_date_time.iso8601_basic_short) }}
 
-    - name: Create snapshot for VM
+    - name: Attempt standard snapshot creation for VM
       shell: >
         virsh snapshot-create-as
         --domain {{ vm_name }}
@@ -29,6 +29,38 @@
         --description "{{ snapshot_description }}"
         {{ '--disk-only' if (snapshot_disk_only | default(false) | bool) else '' }}
       register: snapshot_create_result
+      failed_when: false
+
+    - name: Get non-primary disk targets for disk-only fallback
+      shell: |
+        virsh domblklist {{ vm_name }} --details | awk '$1 == "file" && $2 == "disk" && $3 != "vda" {print "--diskspec " $3 ",snapshot=no"}' | tr '\n' ' '
+      register: extra_diskspecs
+      changed_when: false
+      when:
+        - snapshot_create_result.rc != 0
+        - not (snapshot_disk_only | default(false) | bool)
+        - "'pflash' in (snapshot_create_result.stderr | default('')) or 'Operation not supported' in (snapshot_create_result.stderr | default(''))"
+
+    - name: Retry with --disk-only if UEFI/pflash blocks internal snapshot
+      shell: >
+        virsh snapshot-create-as
+        --domain {{ vm_name }}
+        --name "{{ effective_snapshot_name | trim }}"
+        --description "{{ snapshot_description }}"
+        --disk-only {{ extra_diskspecs.stdout | default('') }}
+      register: snapshot_create_fallback
+      failed_when: false
+      when:
+        - snapshot_create_result.rc != 0
+        - not (snapshot_disk_only | default(false) | bool)
+        - "'pflash' in (snapshot_create_result.stderr | default('')) or 'Operation not supported' in (snapshot_create_result.stderr | default(''))"
+
+    - name: Fail if snapshot creation failed
+      fail:
+        msg: "Failed to create snapshot '{{ effective_snapshot_name | trim }}': {{ snapshot_create_fallback.stderr | default(snapshot_create_result.stderr) }}"
+      when:
+        - snapshot_create_result.rc != 0
+        - snapshot_create_fallback is skipped or (snapshot_create_fallback.rc | default(1)) != 0
 
     - name: Display snapshot creation result
       debug:
@@ -47,6 +79,46 @@
     - name: Revert VM to specified snapshot
       shell: virsh snapshot-revert --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
       register: snapshot_revert_result
+      failed_when: false
+
+    - name: Fallback revert for external disk-only snapshot
+      block:
+        - name: Check VM state before external snapshot revert
+          shell: virsh domstate {{ vm_name }}
+          register: revert_vm_state
+          changed_when: false
+
+        - name: Stop VM if running before resetting external snapshot overlay
+          shell: virsh destroy {{ vm_name }}
+          when: "'running' in revert_vm_state.stdout"
+          ignore_errors: yes
+
+        - name: Reset external snapshot overlay back to backing image state
+          shell: |
+            overlay="{{ libvirt_images_path }}/{{ vm_name }}.{{ snapshot_name | trim }}"
+            if [ -f "$overlay" ]; then
+              backing=$(qemu-img info "$overlay" | awk -F': ' '/^backing file:/ {print $2}' | awk '{print $1}')
+              if [ -n "$backing" ]; then
+                qemu-img create -f qcow2 -F qcow2 -b "$backing" "$overlay"
+                chown libvirt-qemu:libvirt-qemu "$overlay"
+                chmod 0644 "$overlay"
+              fi
+            fi
+          become: yes
+
+        - name: Restart VM if it was running before revert
+          shell: virsh start {{ vm_name }}
+          when: "'running' in revert_vm_state.stdout"
+      when:
+        - snapshot_revert_result.rc != 0
+        - "'external' in (snapshot_revert_result.stderr | default('')) or 'not supported' in (snapshot_revert_result.stderr | default(''))"
+
+    - name: Fail if snapshot revert failed for other reasons
+      fail:
+        msg: "Failed to revert to snapshot '{{ snapshot_name | trim }}': {{ snapshot_revert_result.stderr }}"
+      when:
+        - snapshot_revert_result.rc != 0
+        - not ("'external' in (snapshot_revert_result.stderr | default('')) or 'not supported' in (snapshot_revert_result.stderr | default(''))")
 
     - name: Display snapshot revert result
       debug:
@@ -65,6 +137,21 @@
     - name: Delete specified snapshot from VM
       shell: virsh snapshot-delete --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}"
       register: snapshot_delete_result
+      failed_when: false
+
+    - name: Retry snapshot delete with --metadata if external disk-only snapshot
+      shell: virsh snapshot-delete --domain {{ vm_name }} --snapshotname "{{ snapshot_name | trim }}" --metadata
+      register: snapshot_delete_metadata_result
+      when:
+        - snapshot_delete_result.rc != 0
+        - "'external' in (snapshot_delete_result.stderr | default('')) or 'not supported' in (snapshot_delete_result.stderr | default(''))"
+
+    - name: Fail if snapshot deletion failed
+      fail:
+        msg: "Failed to delete snapshot '{{ snapshot_name | trim }}': {{ snapshot_delete_metadata_result.stderr | default(snapshot_delete_result.stderr) }}"
+      when:
+        - snapshot_delete_result.rc != 0
+        - snapshot_delete_metadata_result is skipped or (snapshot_delete_metadata_result.rc | default(1)) != 0
 
     - name: Display snapshot delete result
       debug:
@@ -110,7 +197,7 @@
           ignore_errors: yes
 
         - name: Undefine existing target VM
-          shell: virsh undefine {{ new_vm_name | trim }} --remove-all-storage --snapshots-metadata
+          shell: virsh undefine {{ new_vm_name | trim }} --nvram --remove-all-storage --snapshots-metadata
           ignore_errors: yes
       when:
         - new_vm_exists.rc == 0
@@ -148,7 +235,13 @@
         mode: '0644'
       become: yes
 
-    - name: Create and start new VM from snapshot disk
+    - name: Check if source VM uses UEFI firmware
+      shell: virsh dumpxml {{ vm_name }} | grep -q "<nvram"
+      register: source_vm_is_uefi
+      failed_when: false
+      changed_when: false
+
+    - name: Create and start new BIOS VM from snapshot disk
       shell: >
         virt-install
         --name={{ new_vm_name | trim }}
@@ -160,7 +253,26 @@
         --network {{ vm_network }}
         --graphics {{ vm_graphics }}
         --noautoconsole
-      register: snapshot_clone_result
+      when: source_vm_is_uefi.rc != 0
+
+    - name: Create and start new UEFI/TPM VM from snapshot disk
+      shell: >
+        virt-install
+        --name={{ new_vm_name | trim }}
+        --memory={{ vm_ram }}
+        --vcpus={{ vm_vcpus }}
+        --os-variant=win11
+        --machine=q35
+        --cpu=host-model
+        --import
+        --disk path={{ libvirt_images_path }}/{{ new_vm_name | trim }}.img,bus=virtio,format=qcow2
+        --network {{ vm_network }}
+        --graphics {{ vm_graphics }}
+        --noautoconsole
+        --boot uefi
+        --features smm=on
+        --tpm emulator,model=tpm-crb,version=2.0
+      when: source_vm_is_uefi.rc == 0
 
     - name: Create individual VM inventory file for cloned VM
       copy:
@@ -170,8 +282,8 @@
           all:
             hosts:
               {{ new_vm_name | trim }}:
-                ansible_host: {{ vm_static_ip }}
-                ansible_user: {{ vm_user }}
+                ansible_host: {{ vm_static_ip | default('PENDING') }}
+                ansible_user: {{ vm_user | default('ubuntu') }}
                 ansible_ssh_private_key_file: "~/.ssh/id_rsa"
                 ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
                 vm_created: "{{ ansible_date_time.iso8601 }}"

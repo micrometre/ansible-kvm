@@ -87,7 +87,7 @@ Customize these in `group_vars/all.yml` or via the CLI:
 Customize these in `group_vars/all.yml` or via the CLI:
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `vm_name` | `windows_vm` | Name of the VM |
+| `vm_name` | `windows11_vm` | Name of the VM |
 | `vm_ram` | `2048` | Memory in MB |
 | `vm_vcpus` | `1` | Number of virtual CPUs |
 | `vm_disk_size` | `10G` | Disk size (e.g., 20G) |

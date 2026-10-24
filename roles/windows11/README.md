@@ -66,5 +66,5 @@ virtual disk. Adjust `win11_admin_password`, `win11_locale`, `win11_timezone`, a
 ```bash
 make clean_win11
 # or with a custom name:
-make clean_win11 VM_NAME=my_windows_vm
+make clean_win11 VM_NAME=my_windows11_vm
 ```

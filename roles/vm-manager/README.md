@@ -19,7 +19,7 @@ Defined in `defaults/main.yml`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `vm_name` | `windows_vm` | Identifier for the VM |
+| `vm_name` | `windows11_vm` | Identifier for the VM |
 | `vm_ram` | `2048` | Memory allocation in MB |
 | `vm_vcpus` | `1` | CPU core allocation |
 | `vm_disk_size` | `10G` | Storage capacity |

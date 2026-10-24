@@ -2,8 +2,8 @@
 # Default variables for vm-manager role
 
 # VM configuration
-vm_name: windows_vm
-vm_hostname: windows_vm
+vm_name: windows11_vm
+vm_hostname: windows11_vm
 vm_ram: 2048
 vm_vcpus: 1
 vm_disk_size: 10G
